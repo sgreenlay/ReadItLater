@@ -3,11 +3,14 @@ package main
 import (
 	"crypto/sha256"
 	"context"
+	"encoding/json"
 	"errors"
+    "flag"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -22,7 +25,7 @@ func withDatabase(op func(context.Context, *mongo.Collection) error) error {
 	}
 
 	// Create a context to use with the connection
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 
 	// Connect to the DB
 	config := options.Client().ApplyURI(connectURI).SetRetryWrites(false).SetDirect(true)
@@ -104,6 +107,37 @@ func addURL(rw http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
-	http.HandleFunc("/api/Add", addURL)
-	log.Fatal(http.ListenAndServe(":80", nil))
+    var filePath string
+	flag.StringVar(&filePath, "importFile", "", "Specify file to import into database")
+	flag.Parse()
+	
+	if len(filePath) == 0 {
+		http.HandleFunc("/api/Add", addURL)
+		log.Fatal(http.ListenAndServe(":80", nil))
+	} else {
+		data, err := ioutil.ReadFile(filePath)
+		if err != nil {
+			panic(err)
+		}
+		
+		var importURLs []savedURL
+		jsonError := json.Unmarshal(data, &importURLs)
+		if jsonError != nil {
+			panic(jsonError)
+		}
+
+		dbError := withDatabase(func(ctx context.Context, collection *mongo.Collection) error {
+			for i := range importURLs {
+				importURLs[i].ID = fmt.Sprintf("%x", sha256.Sum256([]byte(importURLs[i].URL)))
+				_, err := collection.InsertOne(ctx, importURLs[i])
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			return nil
+		})
+		if dbError != nil {
+			panic(dbError)
+		}
+	}
 }
